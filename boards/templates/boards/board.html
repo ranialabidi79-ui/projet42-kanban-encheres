@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Salle {{ room_name }}</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    #colonnes { display: flex; gap: 16px; margin: 16px 0; }
+    .colonne { flex: 1; background: #f0f0f0; padding: 8px; min-height: 120px; }
+    .carte { background: white; border: 1px solid #aaa; padding: 6px; margin: 6px 0; }
+    .carte small { color: #666; }
+    #alerte { display: none; background: #ffe0b2; border: 1px solid #e65100; padding: 8px; margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <h1>Salle {{ room_name }}</h1>
+  <p id="moi">Connexion...</p>
+  <div id="alerte"></div>
+  <button id="rafraichir">Redemander l'état</button>
+  <button id="conflit">Simuler un déplacement avec une vieille version</button>
+
+  <div id="colonnes">
+    <div class="colonne"><h3>À faire</h3><div id="todo"></div></div>
+    <div class="colonne"><h3>En cours</h3><div id="doing"></div></div>
+    <div class="colonne"><h3>Terminé</h3><div id="done"></div></div>
+  </div>
+
+  <h3>Messages de test</h3>
+  <input id="texte" placeholder="Ton message">
+  <button id="envoyer">Envoyer</button>
+  <ul id="liste"></ul>
+
+  <script>
+    var salle = "{{ room_name }}";
+    var COLS = ["todo", "doing", "done"];
+    var cartes = {};
+    var protocole = location.protocol === "https:" ? "wss://" : "ws://";
+    var ws = new WebSocket(protocole + location.host + "/ws/board/" + salle + "/");
+
+    function envoyer(obj) { ws.send(JSON.stringify(obj)); }
+
+    function alerter(texte) {
+      var a = document.getElementById("alerte");
+      a.textContent = texte;
+      a.style.display = "block";
+      setTimeout(function () { a.style.display = "none"; }, 5000);
+    }
+
+    function nombreDansColonne(col) {
+      return Object.values(cartes).filter(function (c) { return c.column === col; }).length;
+    }
+
+    function deplacer(carte, sens) {
+      var i = COLS.indexOf(carte.column) + sens;
+      if (i < 0 || i >= COLS.length) { return; }
+      envoyer({
+        type: "move_card",
+        card_id: carte.id,
+        to_column: COLS[i],
+        position: nombreDansColonne(COLS[i]),
+        version: carte.version
+      });
+    }
+
+    function afficher() {
+      COLS.forEach(function (col) { document.getElementById(col).innerHTML = ""; });
+      Object.values(cartes)
+        .sort(function (a, b) { return a.position - b.position || a.id - b.id; })
+        .forEach(function (c) {
+          var div = document.createElement("div");
+          div.className = "carte";
+          div.appendChild(document.createTextNode(c.title + " "));
+          var small = document.createElement("small");
+          small.textContent = "(v" + c.version + ") ";
+          div.appendChild(small);
+          var gauche = document.createElement("button");
+          gauche.textContent = "◀";
+          gauche.onclick = function () { deplacer(c, -1); };
+          var droite = document.createElement("button");
+          droite.textContent = "▶";
+          droite.onclick = function () { deplacer(c, 1); };
+          div.appendChild(gauche);
+          div.appendChild(droite);
+          var zone = document.getElementById(c.column);
+          if (zone) { zone.appendChild(div); }
+        });
+    }
+
+    ws.onmessage = function (e) {
+      var data = JSON.parse(e.data);
+      if (data.type === "welcome") {
+        document.getElementById("moi").textContent =
+          "Connectée : " + data.user + " (serveur : " + data.served_by + ")";
+      } else if (data.type === "board_state") {
+        cartes = {};
+        data.cards.forEach(function (c) { cartes[c.id] = c; });
+        afficher();
+      } else if (data.type === "card_moved") {
+        var c = cartes[data.card_id];
+        if (c) {
+          c.column = data.to_column;
+          c.position = data.position;
+          c.version = data.version;
+          afficher();
+        }
+      } else if (data.type === "conflict") {
+        cartes[data.current.id] = data.current;
+        afficher();
+        alerter("Carte modifiée par quelqu'un d'autre : voici sa vraie place.");
+      } else if (data.type === "error") {
+        alerter("Erreur : " + data.reason);
+      } else if (data.message) {
+        var li = document.createElement("li");
+        li.textContent = data.user + " : " + data.message;
+        document.getElementById("liste").appendChild(li);
+      }
+    };
+
+    document.getElementById("rafraichir").onclick = function () {
+      envoyer({ type: "sync_request" });
+    };
+
+    document.getElementById("conflit").onclick = function () {
+      var premiere = Object.values(cartes)[0];
+      if (!premiere) { return; }
+      var i = COLS.indexOf(premiere.column);
+      var suivante = COLS[(i + 1) % COLS.length];
+      envoyer({
+        type: "move_card",
+        card_id: premiere.id,
+        to_column: suivante,
+        position: 0,
+        version: premiere.version - 1
+      });
+    };
+
+    document.getElementById("envoyer").onclick = function () {
+      var champ = document.getElementById("texte");
+      envoyer({ type: "chat", message: champ.value });
+      champ.value = "";
+    };
+  </script>
+</body>
+</html>
